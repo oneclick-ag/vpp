@@ -17,6 +17,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: "Extract data from tag: version, message, body"
+        id: tag
+        run: |
+          git fetch --tags --force
+
       - name: Build
         run: |
           echo Y | make install-dep
