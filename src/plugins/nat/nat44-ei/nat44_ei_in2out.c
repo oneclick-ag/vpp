@@ -363,6 +363,17 @@ nat44_i2o_is_idle_session_cb (clib_bihash_kv_8_8_t * kv, void *arg)
 }
 #endif
 
+static int nat44_ei_expire_sessions_cb(clib_bihash_kv_8_8_t* kv, void* arg)
+{
+	nat44_ei_main_t *nm = &nat44_ei_main;
+
+	if(nat44_i2o_is_idle_session_cb(kv, arg)) {
+		clib_bihash_add_del_8_8(&nm->in2out, kv, 0);
+	}
+
+	return 1;
+}
+
 static u32
 slow_path (nat44_ei_main_t *nm, vlib_buffer_t *b0, ip4_header_t *ip0,
 	   ip4_address_t i2o_addr, u16 i2o_port, u32 rx_fib_index0,
@@ -387,6 +398,10 @@ slow_path (nat44_ei_main_t *nm, vlib_buffer_t *b0, ip4_header_t *ip0,
   ip4_address_t sm_addr;
   u16 sm_port;
   u32 sm_fib_index;
+
+  ctx0.now = now;
+  ctx0.thread_index = thread_index;
+  clib_bihash_foreach_key_value_pair_8_8(&nm->in2out, nat44_ei_expire_sessions_cb, &ctx0);
 
   if (PREDICT_FALSE (nat44_ei_maximum_sessions_exceeded (nm, thread_index)))
     {
@@ -477,8 +492,6 @@ slow_path (nat44_ei_main_t *nm, vlib_buffer_t *b0, ip4_header_t *ip0,
   *sessionp = s;
 
   /* Add to translation hashes */
-  ctx0.now = now;
-  ctx0.thread_index = thread_index;
   init_nat_i2o_kv (&kv0, s, thread_index,
 		   s - nm->per_thread_data[thread_index].sessions);
   if (clib_bihash_add_or_overwrite_stale_8_8 (
