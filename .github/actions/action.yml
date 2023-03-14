@@ -1,0 +1,6 @@
+
+name: release-action
+description: Build VPP in Docker
+runs:
+  using: docker
+  image: Dockerfile
