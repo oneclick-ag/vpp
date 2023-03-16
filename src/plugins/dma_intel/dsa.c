@@ -212,6 +212,29 @@ intel_dsa_check_channel (intel_dsa_channel_t *ch, vlib_dma_config_data_t *cd)
   return 0;
 }
 
+static_always_inline void
+intel_dsa_alloc_dma_batch (vlib_main_t *vm, intel_dsa_config_t *idc)
+{
+  intel_dsa_batch_t *b;
+  b = vlib_physmem_alloc (vm, idc->alloc_size);
+  /* if no free space in physmem, force quit */
+  ASSERT (b != NULL);
+  *b = idc->batch_template;
+  b->max_transfers = idc->max_transfers;
+
+  u32 def_flags = (INTEL_DSA_OP_MEMMOVE << INTEL_DSA_OP_SHIFT) |
+		  INTEL_DSA_FLAG_CACHE_CONTROL;
+  if (b->ch->block_on_fault)
+    def_flags |= INTEL_DSA_FLAG_BLOCK_ON_FAULT;
+
+  for (int i = 0; i < idc->max_transfers; i++)
+    {
+      intel_dsa_desc_t *dsa_desc = b->descs + i;
+      dsa_desc->op_flags = def_flags;
+    }
+  vec_add1 (idc->freelist, b);
+}
+
 static int
 intel_dsa_config_add_fn (vlib_main_t *vm, vlib_dma_config_data_t *cd)
 {
@@ -259,6 +282,10 @@ intel_dsa_config_add_fn (vlib_main_t *vm, vlib_dma_config_data_t *cd)
 	"config %d in thread %d stride %d src/dst/size offset %d-%d-%d",
 	cd->config_index, thread, b->stride, b->src_ptr_off, b->dst_ptr_off,
 	b->size_off);
+
+      /* allocate dma batch in advance */
+      for (u32 index = 0; index < cd->cfg.max_batches; index++)
+	intel_dsa_alloc_dma_batch (vm, idc);
     }
 
   dsa_log_info ("config %u added", cd->private_data);
@@ -323,7 +350,7 @@ intel_dsa_node_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
   intel_dsa_thread_t *t =
     vec_elt_at_index (idm->dsa_threads, vm->thread_index);
   u32 n_pending = 0, n = 0;
-  u8 glitch = 0;
+  u8 glitch = 0, status;
 
   if (!t->pending_batches)
     return 0;
@@ -335,8 +362,9 @@ intel_dsa_node_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
       intel_dsa_batch_t *b = t->pending_batches[i];
       intel_dsa_channel_t *ch = b->ch;
 
-      if ((b->status == INTEL_DSA_STATUS_SUCCESS ||
-	   b->status == INTEL_DSA_STATUS_CPU_SUCCESS) &&
+      status = b->status;
+      if ((status == INTEL_DSA_STATUS_SUCCESS ||
+	   status == INTEL_DSA_STATUS_CPU_SUCCESS) &&
 	  !glitch)
 	{
 	  /* callback */
@@ -357,7 +385,7 @@ intel_dsa_node_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  vec_add1 (idm->dsa_config_heap[b->config_heap_index].freelist, b);
 
 	  intel_dsa_channel_lock (ch);
-	  if (b->status == INTEL_DSA_STATUS_SUCCESS)
+	  if (status == INTEL_DSA_STATUS_SUCCESS)
 	    {
 	      ch->n_enq--;
 	      ch->completed++;
@@ -369,7 +397,7 @@ intel_dsa_node_fn (vlib_main_t *vm, vlib_node_runtime_t *node,
 	  b->batch.n_enq = 0;
 	  b->status = INTEL_DSA_STATUS_IDLE;
 	}
-      else if (b->status == INTEL_DSA_STATUS_BUSY)
+      else if (status == INTEL_DSA_STATUS_BUSY)
 	{
 	  glitch = 1 & b->barrier_before_last;
 	  t->pending_batches[n++] = b;
